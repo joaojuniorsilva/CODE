@@ -1,0 +1,166 @@
+m = 1.0; % Massa do drone [kg]
+g = 9.81; % Gravidade [m/s^2]
+I = diag([0.02, 0.02, 0.02]); % Matriz de inércia [kg*m^2]
+Ixx=0.02; Iyy = 0.02; Izz=0.02;
+% Simulação
+dt = 0.001; % Ajuste no passo de tempo
+t_final = 80; % Tempo de simulação
+index = 1; % Índice de armazenamento de resultados
+
+% Variáveis para armazenar os resultados para plotagem
+t = 0:dt:t_final;
+x_plot = zeros(length(t), 1);
+y_plot = zeros(length(t), 1);
+z_plot = zeros(length(t), 1);
+phi_plot = zeros(length(t), 1);
+theta_plot = zeros(length(t), 1);
+psi_plot = zeros(length(t), 1);
+
+% Parâmetros do controlador PID ajustados
+Kp_pos = 1.3; Ki_pos = 0.2; Kd_pos = 2.5;  % Ganhos PID ajustados para posição
+Kp_ang = 0.3; Ki_ang = 0.1; Kd_ang = 0.5;  % Ganhos PID para ângulos
+
+% Posições e ângulos desejados
+x_d = 3; 
+%y_d = 1; 
+y_d = 5*sin(0.2*t);
+%z_d = 5; % Posição desejada
+z_d = 10*sin(0.1*t)+10;
+phi_d = 0.1; theta_d = 0.2; psi_d = 0.4; % Ângulos desejados
+
+% Inicialização das variáveis dinâmicas
+x = 0; y = 0; z = 0; % Posição inicial
+phi = 0; theta = 0; psi = 0; % Ângulos de Euler iniciais
+vx = 0; vy = 0; vz = 0; % Velocidade inicial
+omega = [0; 0; 0]; % Velocidade angular inicial
+phi1 = zeros(size(t)); % rotação em torno do eixo x (rolagem)
+theta1 = zeros(size(t)); % rotação em torno do eixo y (inclinação)
+psi1 = zeros(size(t)); % rotação em torno do eixo z (guinada)
+
+% Inicializando variáveis para derivadas e integrais
+anterior_dx = 0; anterior_dy = 0; anterior_dz = 0;
+anterior_phi=0; anterior_theta = 0; anterior_psi=0;
+int_x = 0; int_y = 0; int_z = 0; % Acumulador para o erro integral
+int_phi = 0; int_theta = 0; int_psi = 0;
+
+for n = 0:dt:t_final
+    % Cálculo do erro em posição
+    dx = (x_d - x); dy = (y_d(index) - y); dz = (z_d(index) - z);
+
+    % Aproximação da derivada do erro
+    u_x_deriv = (dx - anterior_dx)/dt;
+    u_y_deriv = (dy - anterior_dy)/dt;
+    u_z_deriv = (dz - anterior_dz)/dt;
+
+    % Atualizar o erro integral
+    int_x = int_x + dx * dt;
+    int_y = int_y + dy * dt;
+    int_z = int_z + dz * dt;
+
+    % Controladores PID atualizados (com novos ganhos)
+    ux = Kp_pos*dx + Ki_pos*int_x + Kd_pos*u_x_deriv;
+    uy = Kp_pos*dy + Ki_pos*int_y + Kd_pos*u_y_deriv;
+    uz = Kp_pos*dz + Ki_pos*int_z + Kd_pos*u_z_deriv;
+
+    % Saturação para evitar valores excessivos
+    max_empuxo = 20; % Limite máximo de força de sustentação
+    F_sust = min(max([ux; uy; uz] + [0; 0; m*g], -max_empuxo), max_empuxo);
+
+    R = [cos(psi)*cos(theta), cos(psi)*sin(theta)*sin(phi)-sin(psi)*cos(phi), cos(psi)*sin(theta)*cos(phi)+sin(psi)*sin(phi);
+         sin(psi)*cos(theta), sin(psi)*sin(theta)*sin(phi)+cos(psi)*cos(phi), sin(psi)*sin(theta)*cos(phi)-cos(psi)*sin(phi);
+         -sin(theta),         cos(theta)*sin(phi),                          cos(theta)*cos(phi)];
+
+    acel = (R * F_sust - [0; 0; m*g])/m - cross(omega, [vx; vy; vz]);
+
+    % Atualização das equações de movimento translacionais
+    vx = vx + acel(1)*dt;
+    vy = vy + acel(2)*dt;
+    vz = vz + acel(3)*dt;
+
+    % Atualização das posições
+    x = x + vx*dt;
+    y = y + vy*dt;
+    z = z + vz*dt;
+
+    % Atualizar os valores anteriores de posição
+    anterior_dx = dx;
+    anterior_dy = dy;
+    anterior_dz = dz;
+
+    % Cálculo do erro em ângulos
+    dphi = (phi_d - phi); dtheta = (theta_d - theta); dpsi = (psi_d - psi);
+
+    u_phi_deriv = (dphi - anterior_phi)/dt;
+    u_theta_deriv = (dtheta - anterior_theta)/dt;
+    u_psi_deriv = (dpsi - anterior_psi)/dt;
+
+    anterior_phi = dphi;
+    anterior_theta = dtheta;
+    anterior_psi = dpsi;
+
+    % Atualizar o erro integral dos ângulos
+    int_phi = int_phi + dphi * dt;
+    int_theta = int_theta + dtheta * dt;
+    int_psi = int_psi + dpsi * dt;
+
+    % Controlador PID para ângulos (inclinação dos rotores) ajustado
+    u_phi = Kp_ang*dphi + Ki_ang*int_phi + Kd_ang*u_phi_deriv;
+    u_theta = Kp_ang*dtheta + Ki_ang*int_theta + Kd_ang*u_theta_deriv;
+    u_psi = Kp_ang*dpsi + Ki_ang*int_psi + Kd_ang*u_psi_deriv;
+
+    % Atualização das velocidades angulares (modelo rotacional)
+    tau = [u_phi; u_theta; u_psi];
+    omega_deriv = inv(I)*(tau - cross(omega, I*omega));
+    omega = omega + omega_deriv*dt;
+
+    % Atualização dos ângulos de Euler
+    euler_deriv = [1 sin(theta)*tan(phi) cos(theta)*tan(phi); 0 cos(theta) -sin(theta); 0 sin(theta)/cos(phi) cos(theta)/cos(phi)] * omega;
+    phi = phi + euler_deriv(1)*dt;
+    theta = theta + euler_deriv(2)*dt;
+    psi = psi + euler_deriv(3)*dt;
+    %phi = phi + omega(1)*dt; % Atualizar phi usando omega
+    %theta = theta + omega(2)*dt; % Atualizar theta usando omega
+    %psi = psi + omega(3)*dt; % Atualizar psi usando omega
+    %phi1(n) = phi1(n-1) + (u_y / Ixx) * dt;
+    %theta1(n) = theta1(n-1) + (u_x / Iyy) * dt;
+    %psi1(n) = psi1(n-1) + (u_z / Izz) * dt;
+    % Armazenar os resultados para plotagem
+    x_plot(index) = x;
+    y_plot(index) = y;
+    z_plot(index) = z;
+    phi_plot(index) = phi;
+    theta_plot(index) = theta;
+    psi_plot(index) = psi;
+
+    index = index + 1;
+end
+figure;
+subplot(3,1,1);
+plot(t, x_plot, 'b', t, x_d*ones(1,length(t)), 'r--','LineWidth', 1.5);
+title('Posição em X');
+xlabel('Tempo [s]');
+ylabel('Posição X [m]');
+legend('Posição Real', 'Posição Desejada');
+
+subplot(3,1,2);
+plot(t, y_plot, 'b', t, y_d, 'r--','LineWidth', 1.5);
+title('Posição em Y');
+xlabel('Tempo [s]');
+ylabel('Posição Y [m]');
+legend('Posição Real', 'Posição Desejada');
+
+subplot(3,1,3);
+plot(t, z_plot, 'b', t, z_d, 'r--','LineWidth', 1.5);
+title('Posição em Z');
+xlabel('Tempo [s]');
+ylabel('Posição Z [m]');
+legend('Posição Real', 'Posição Desejada');
+
+figure; 
+plot3(x_plot,y_plot,z_plot,'LineWidth', 1.5)
+title('Trajetória em 3D');
+hold on
+plot3(x_d*ones(1,length(t)),y_d,z_d,'r--','LineWidth', 1.5)
+legend('Posição Real', 'Posição Desejada');
+
+
